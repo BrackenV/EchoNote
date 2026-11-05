@@ -7,11 +7,18 @@ struct TranscriptSegment: Identifiable {
     let text: String
 }
 
+enum EchoNoteConnectionState: Equatable {
+    case checking
+    case connected
+    case unavailable(String)
+}
+
 @MainActor
 final class EchoNoteViewModel: ObservableObject {
     @Published private(set) var status = "Ready"
     @Published private(set) var isRecording = false
     @Published private(set) var isStarting = false
+    @Published private(set) var connectionState: EchoNoteConnectionState = .checking
     @Published private(set) var transcript: [TranscriptSegment] = []
     @Published private(set) var elapsedText = "00:00"
 
@@ -23,26 +30,52 @@ final class EchoNoteViewModel: ObservableObject {
     private var timer: Timer?
     private var lastSegmentIndex = -1
     private var eventTask: Task<Void, Never>?
+    private var healthTask: Task<Void, Never>?
 
-    func toggleRecording(address: String, token: String) async {
+    var connectionSummary: String {
+        switch connectionState {
+        case .checking:
+            return "Checking PC on Tailscale…"
+        case .connected:
+            return "PC connected · Ready"
+        case .unavailable(let message):
+            return message
+        }
+    }
+
+    func checkServer() {
+        healthTask?.cancel()
+        connectionState = .checking
+        healthTask = Task { [weak self] in
+            guard let self else { return }
+            while !Task.isCancelled {
+                do {
+                    try await EchoNoteHealthCheck.check(url: EchoNoteConfiguration.serverURL)
+                    guard !Task.isCancelled else { return }
+                    self.connectionState = .connected
+                } catch let error as ClientError {
+                    guard !Task.isCancelled else { return }
+                    self.connectionState = .unavailable(error.localizedDescription)
+                } catch {
+                    guard !Task.isCancelled else { return }
+                    self.connectionState = .unavailable("PC unreachable on Tailscale. Check that EchoNote server is running.")
+                }
+                try? await Task.sleep(for: .seconds(5))
+            }
+        }
+    }
+
+    func toggleRecording() async {
         if isRecording {
             await stopRecording()
         } else {
-            await startRecording(address: address, token: token)
+            await startRecording()
         }
     }
 
     func clearTranscript() { transcript.removeAll() }
 
-    private func startRecording(address: String, token: String) async {
-        guard let url = URL(string: address), ["ws", "wss"].contains(url.scheme?.lowercased() ?? ""), url.host != nil else {
-            status = "Enter a valid ws:// or wss:// server address."
-            return
-        }
-        guard token.count >= 24 else {
-            status = "The server token must be at least 24 characters."
-            return
-        }
+    private func startRecording() async {
         isStarting = true
         status = "Connecting to server…"
         do {
@@ -51,7 +84,7 @@ final class EchoNoteViewModel: ObservableObject {
             lastSegmentIndex = -1
             let client = EchoNoteTransport()
             transport = client
-            try await client.connect(url: url, token: token, sessionID: sessionID)
+            try await client.connect(url: EchoNoteConfiguration.serverURL, sessionID: sessionID)
             eventTask = Task { [weak self, client] in
                 for await event in client.events {
                     guard let self else { return }

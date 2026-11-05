@@ -306,15 +306,12 @@ async def _serve_session(
     writer: asyncio.StreamWriter,
     engine: Any,
     model: Any,
-    auth_token: str,
     first: dict[str, Any],
 ) -> None:
     if first.get("type") != "start":
         raise ProtocolError("expected_start", "The first message must be start.")
     if first.get("protocol_version") != PROTOCOL_VERSION:
         raise ProtocolError("version_mismatch", "Unsupported EchoNote protocol version.")
-    if not auth_token or first.get("token") != auth_token:
-        raise ProtocolError("unauthorized", "The session token is missing or incorrect.", 1008)
     session_id = first.get("session_id")
     if not isinstance(session_id, str) or not 1 <= len(session_id) <= 128:
         raise ProtocolError("bad_session", "A session_id of 1 to 128 characters is required.")
@@ -422,8 +419,7 @@ async def _handle_client(
     writer: asyncio.StreamWriter,
     engine: Any,
     model: Any,
-    auth_token: str,
-) -> None:
+ ) -> None:
     peer = writer.get_extra_info("peername")
     claimed_session = False
     try:
@@ -432,13 +428,14 @@ async def _handle_client(
         while "_ping" in first:
             await _send_frame(writer, 0xA, first["_ping"])
             first = await _receive_json(reader)
-        if first.get("type") == "start" and first.get("token") != auth_token:
-            raise ProtocolError("unauthorized", "The session token is missing or incorrect.", 1008)
+        if first.get("type") == "health":
+            await _send_json(writer, {"type": "health", "status": "ready"})
+            return
         if ACTIVE_SESSION.locked():
             raise ProtocolError("server_busy", "Another recording session is already active.", 1013)
         await ACTIVE_SESSION.acquire()
         claimed_session = True
-        await _serve_session(reader, writer, engine, model, auth_token, first)
+        await _serve_session(reader, writer, engine, model, first)
     except ProtocolError as exc:
         log.info("session_rejected peer=%s code=%s", peer, exc.code)
         try:
@@ -465,16 +462,13 @@ async def _handle_client(
 
 
 async def run_server() -> None:
-    token = os.environ.get("ECHONOTE_TOKEN", "")
-    if len(token) < 24:
-        raise RuntimeError("Set ECHONOTE_TOKEN to a private token of at least 24 characters before starting.")
     engine = _load_lecture_engine()
     log.info("Loading the existing cached Parakeet model; downloads are disabled.")
     model, device = await asyncio.to_thread(_load_cached_model, engine)
     log.info("Parakeet ready device=%s", device)
 
     server = await asyncio.start_server(
-        lambda reader, writer: _handle_client(reader, writer, engine, model, token),
+        lambda reader, writer: _handle_client(reader, writer, engine, model),
         host=HOST,
         port=PORT,
         limit=MAX_MESSAGE_BYTES + 1024,

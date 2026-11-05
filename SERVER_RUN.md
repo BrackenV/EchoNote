@@ -4,17 +4,18 @@ The server uses the Python environment and Parakeet cache already used by Lectur
 
 ## Start it on the PC
 
-Open PowerShell in this EchoNote folder. Set the bind address to the PC's Tailscale IPv4 address (find it with `tailscale ip -4`), create a temporary private session token, then launch with the existing Lecture Transcriber Python executable:
+Open PowerShell in this EchoNote folder. EchoNote connects directly to this PC at `100.118.165.117` over Tailscale. Bind the server to that address and launch it with the existing Lecture Transcriber Python executable:
 
 ```powershell
-$env:ECHONOTE_HOST = '<PC Tailscale IPv4 address>'
-$env:ECHONOTE_TOKEN = [guid]::NewGuid().ToString('N') + [guid]::NewGuid().ToString('N')
+$env:ECHONOTE_HOST = '100.118.165.117'
 & 'D:\LectureTranscriber\venv\Scripts\python.exe' '.\server.py'
 ```
 
-The token must be at least 24 characters. Keep it private and provide the same value to the iPhone client. The server defaults to `127.0.0.1` if no host is selected, so it will not be reachable from the phone by default. It listens on port `8765`; set `ECHONOTE_PORT` to change it.
+The server listens on port `8765`; set `ECHONOTE_PORT` to change it. The server defaults to `127.0.0.1` if no host is selected, so it will not be reachable from the phone by default.
 
-The server requires one active session, protocol version `1`, mono 16 kHz signed 16-bit little-endian PCM, and a JSON `start` control message containing `session_id`, `sample_rate`, `channels`, `sample_format`, and `token`. Send each audio chunk as a WebSocket binary message. Send JSON `{"type":"stop","session_id":"..."}` to flush the last partial segment and receive the final status.
+The iPhone's current Tailscale address is `100.76.164.28`. The app connects outward to the PC, so the phone address is not entered in the app or required by the server. The app checks the PC with an `health` WebSocket message; this confirms that the PC is reachable over Tailscale, without starting a recording session.
+
+The server requires one active session, protocol version `1`, mono 16 kHz signed 16-bit little-endian PCM, and a JSON `start` control message containing `session_id`, `sample_rate`, `channels`, `sample_format`, . Send each audio chunk as a WebSocket binary message. Send JSON `{"type":"stop","session_id":"..."}` to flush the last partial segment and receive the final status.
 
 The server is plain WebSocket and should be used only over the private Tailscale network; do not expose its port publicly. It logs session IDs and timing/error metadata, not audio or transcript text. The existing Lecture Transcriber helper creates and removes a temporary WAV for each inference segment in `D:\LectureTranscriber\temp`.
 

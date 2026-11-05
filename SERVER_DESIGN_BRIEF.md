@@ -54,6 +54,7 @@ Control messages are JSON. Audio is binary PCM. Exact framing/sequence metadata 
 - Server `final`: session ID, last segment index, completion status.
 - Server `error`: stable error code and user-readable message.
 - Optional `ping` / `pong`: connection health.
+- `health` with the session token: an authenticated reachability check that returns `{"type":"health","status":"ready"}` without acquiring the single recording-session lock.
 
 Reject duplicate starts, malformed frames, oversized messages, unexpected control messages, and frames received after stop. Do not allow one client's session to consume unbounded memory or queue capacity.
 

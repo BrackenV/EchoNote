@@ -1,5 +1,41 @@
 import Foundation
 
+enum EchoNoteConfiguration {
+    static let serverAddress = "ws://100.118.165.117:8765"
+    static let serverURL = URL(string: serverAddress)!
+}
+
+enum EchoNoteHealthCheck {
+    static func check(url: URL) async throws {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 6
+        let task = URLSession.shared.webSocketTask(with: request)
+        task.resume()
+        defer { task.cancel(with: .normalClosure, reason: nil) }
+
+        let body = try JSONSerialization.data(withJSONObject: ["type": "health"])
+        guard let json = String(data: body, encoding: .utf8) else {
+            throw ClientError.server("Could not prepare the connection check.")
+        }
+        try await task.send(.string(json))
+
+        let reply = try await task.receive()
+        guard case .string(let response) = reply,
+              let data = response.data(using: .utf8),
+              let message = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            throw ClientError.server("The PC returned an invalid connection check response.")
+        }
+        if message["type"] as? String == "error" {
+            let description = message["message"] as? String ?? "PC rejected the connection check."
+            throw ClientError.server(description)
+        }
+        guard message["type"] as? String == "health",
+              message["status"] as? String == "ready" else {
+            throw ClientError.server("PC returned an unexpected connection check response.")
+        }
+    }
+}
+
 enum ServerEvent: Sendable {
     case transcript(index: Int, text: String)
     case final(failed: [Int])
@@ -21,7 +57,7 @@ actor EchoNoteTransport {
         eventContinuation = continuation
     }
 
-    func connect(url: URL, token: String, sessionID: String) async throws {
+    func connect(url: URL, sessionID: String) async throws {
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         let task = URLSession.shared.webSocketTask(with: request)
@@ -29,7 +65,7 @@ actor EchoNoteTransport {
         task.resume()
         let start: [String: Any] = [
             "type": "start", "protocol_version": 1, "session_id": sessionID,
-            "sample_rate": 16_000, "channels": 1, "sample_format": "s16le", "token": token
+            "sample_rate": 16_000, "channels": 1, "sample_format": "s16le"
         ]
         try await task.send(.string(try Self.json(start)))
         let reply = try await task.receive()
