@@ -113,8 +113,12 @@ final class EchoNoteViewModel: ObservableObject {
 
     private func startAudioCapture(transport: EchoNoteTransport) throws {
         let audioSession = AVAudioSession.sharedInstance()
-        try audioSession.setCategory(.record, mode: .measurement)
-        try audioSession.setActive(true)
+        do {
+            try audioSession.setCategory(.record, mode: .measurement)
+            try audioSession.setActive(true)
+        } catch {
+            throw ClientError.audioSessionActivationFailed
+        }
 
         let input = audioEngine.inputNode
         let sourceFormat = input.inputFormat(forBus: 0)
@@ -208,12 +212,15 @@ final class EchoNoteViewModel: ObservableObject {
 enum ClientError: LocalizedError {
     case microphoneDenied
     case audioFormatUnavailable
+    case audioSessionActivationFailed
     case server(String)
 
     var errorDescription: String? {
         switch self {
         case .microphoneDenied: return "Microphone access is off. Allow it in Settings to record."
         case .audioFormatUnavailable: return "Could not prepare the microphone audio format."
+        case .audioSessionActivationFailed:
+            return "iOS couldn't activate the microphone. A Discord or phone call may be using it; leave the call, then try again."
         case .server(let message): return message
         }
     }
