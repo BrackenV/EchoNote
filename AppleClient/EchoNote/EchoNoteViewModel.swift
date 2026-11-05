@@ -2,11 +2,6 @@ import AVFoundation
 import Combine
 import Foundation
 
-struct TranscriptSegment: Identifiable {
-    let id: Int
-    let text: String
-}
-
 enum EchoNoteConnectionState: Equatable {
     case checking
     case connected
@@ -19,7 +14,7 @@ final class EchoNoteViewModel: ObservableObject {
     @Published private(set) var isRecording = false
     @Published private(set) var isStarting = false
     @Published private(set) var connectionState: EchoNoteConnectionState = .checking
-    @Published private(set) var transcript: [TranscriptSegment] = []
+    @Published private(set) var transcript = ""
     @Published private(set) var elapsedText = "00:00"
 
     private let audioEngine = AVAudioEngine()
@@ -73,7 +68,7 @@ final class EchoNoteViewModel: ObservableObject {
         }
     }
 
-    func clearTranscript() { transcript.removeAll() }
+    func clearTranscript() { transcript = "" }
 
     private func startRecording() async {
         isStarting = true
@@ -187,7 +182,10 @@ final class EchoNoteViewModel: ObservableObject {
         case .transcript(let index, let text):
             guard index > lastSegmentIndex else { return }
             lastSegmentIndex = index
-            transcript.append(TranscriptSegment(id: index, text: text))
+            let sentence = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !sentence.isEmpty else { return }
+            if !transcript.isEmpty { transcript += " " }
+            transcript += sentence
         case .final(let failed):
             status = failed.isEmpty ? "Finished" : "Finished with \(failed.count) segment error(s)."
             transport = nil

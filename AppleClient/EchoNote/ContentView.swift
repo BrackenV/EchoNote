@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: EchoNoteViewModel
@@ -10,6 +11,7 @@ struct ContentView: View {
                 ScrollView {
                     VStack(spacing: 14) {
                         connectionSettings
+                            .id("top")
                         connectionStatus
 
                         Button {
@@ -26,22 +28,19 @@ struct ContentView: View {
 
                         transcriptHeader
 
-                        LazyVStack(alignment: .leading, spacing: 10) {
+                        Group {
                             if viewModel.transcript.isEmpty {
                                 Text("Start recording and recognized speech will appear here.")
-                                    .font(.subheadline)
                                     .foregroundStyle(.secondary)
-                                    .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
                             } else {
-                                ForEach(viewModel.transcript) { segment in
-                                    Text(segment.text.isEmpty ? "(No speech recognized in this segment.)" : segment.text)
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                        .padding(12)
-                                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
-                                        .id(segment.id)
-                                }
+                                Text(viewModel.transcript)
+                                    .textSelection(.enabled)
                             }
                         }
+                        .font(.body)
+                        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                        .padding(12)
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
                     .frame(maxWidth: 560)
                     .frame(maxWidth: .infinity)
@@ -49,9 +48,14 @@ struct ContentView: View {
                 }
                 .scrollIndicators(.visible)
                 .scrollBounceBehavior(.always)
-                .onChange(of: viewModel.transcript.count) { _, _ in
-                    if let last = viewModel.transcript.last {
-                        withAnimation { proxy.scrollTo(last.id, anchor: .bottom) }
+                .toolbar {
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button {
+                            withAnimation(.easeInOut) { proxy.scrollTo("top", anchor: .top) }
+                        } label: {
+                            Image(systemName: "arrow.up")
+                        }
+                        .accessibilityLabel("Scroll to top")
                     }
                 }
             }
@@ -109,11 +113,19 @@ struct ContentView: View {
         HStack {
             Text("Transcript")
                 .font(.title3.bold())
-            Spacer()
             if !viewModel.transcript.isEmpty {
+                Button {
+                    UIPasteboard.general.string = viewModel.transcript
+                } label: {
+                    Label("Copy", systemImage: "doc.on.doc")
+                        .labelStyle(.titleAndIcon)
+                }
+                .font(.subheadline)
+                .accessibilityLabel("Copy transcript")
                 Button("Clear") { viewModel.clearTranscript() }
                     .font(.subheadline)
             }
+            Spacer()
         }
         .padding(.top, 2)
     }
