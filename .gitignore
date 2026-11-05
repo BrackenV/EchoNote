@@ -1,0 +1,14 @@
+﻿# Local smoke-test artifacts
+.echonote-smoke-runtime/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Xcode / Swift build artifacts
+.DS_Store
+DerivedData/
+*.xcuserstate
+xcuserdata/
