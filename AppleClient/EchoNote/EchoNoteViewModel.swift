@@ -112,6 +112,10 @@ final class EchoNoteViewModel: ObservableObject {
     }
 
     private func startAudioCapture(transport: EchoNoteTransport) throws {
+        let audioSession = AVAudioSession.sharedInstance()
+        try audioSession.setCategory(.record, mode: .measurement)
+        try audioSession.setActive(true)
+
         let input = audioEngine.inputNode
         let sourceFormat = input.inputFormat(forBus: 0)
         guard sourceFormat.sampleRate > 0, sourceFormat.channelCount > 0,
@@ -120,11 +124,10 @@ final class EchoNoteViewModel: ObservableObject {
                                                channels: 1,
                                                interleaved: true),
               let converter = AVAudioConverter(from: sourceFormat, to: targetFormat) else {
+            try? audioSession.setActive(false)
             throw ClientError.audioFormatUnavailable
         }
         self.converter = converter
-        try AVAudioSession.sharedInstance().setCategory(.record, mode: .measurement, options: [.allowBluetooth])
-        try AVAudioSession.sharedInstance().setActive(true)
         input.installTap(onBus: 0, bufferSize: 4096, format: sourceFormat) { [weak self] buffer, _ in
             guard let self, let converted = self.convert(buffer, using: converter) else { return }
             Task {
@@ -136,6 +139,7 @@ final class EchoNoteViewModel: ObservableObject {
         do { try audioEngine.start() }
         catch {
             input.removeTap(onBus: 0)
+            try? audioSession.setActive(false)
             throw error
         }
     }
