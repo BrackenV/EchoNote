@@ -14,18 +14,23 @@ import hashlib
 import json
 import logging
 import os
+import re
 import shutil
+import sqlite3
 import struct
 import sys
 import time
 import uuid
 from array import array
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 
 ROOT = Path(__file__).resolve().parent
+RUNTIME_ROOT = Path(os.environ.get("ECHONOTE_RUNTIME_ROOT", str(ROOT / ".echonote-runtime")))
+METRICS_DB = Path(os.environ.get("ECHONOTE_METRICS_DB", str(RUNTIME_ROOT / "logs" / "session_metrics.sqlite3")))
 DEFAULT_LECTURE_TRANSCRIBER = Path(
     r"C:\Users\ellih\Desktop\Personal\University Work Y1\Lecture Transcriber"
 )
@@ -194,6 +199,57 @@ def _transcribe_pcm(engine: Any, model: Any, pcm: bytes) -> str:
         shutil.rmtree(work, ignore_errors=True)
 
 
+def _count_words(text: str) -> int:
+    """Count recognized word-like tokens without retaining transcript text."""
+    return len(re.findall(r"\b[\w']+\b", text, flags=re.UNICODE))
+
+
+def _initialize_metrics_store() -> None:
+    METRICS_DB.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(METRICS_DB) as connection:
+        connection.execute(
+            """CREATE TABLE IF NOT EXISTS sessions (
+                id INTEGER PRIMARY KEY,
+                started_at_utc TEXT NOT NULL,
+                duration_seconds REAL NOT NULL,
+                word_count INTEGER NOT NULL,
+                audio_frame_count INTEGER NOT NULL,
+                audio_seconds REAL NOT NULL,
+                inference_segments INTEGER NOT NULL,
+                completed_segments INTEGER NOT NULL,
+                failed_segments INTEGER NOT NULL,
+                avg_processing_seconds REAL,
+                status TEXT NOT NULL
+            )"""
+        )
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(sessions)")}
+        if "completed_segments" not in columns:
+            connection.execute(
+                "ALTER TABLE sessions ADD COLUMN completed_segments INTEGER NOT NULL DEFAULT 0"
+            )
+
+
+def _store_session_metrics(metrics: dict[str, Any]) -> tuple[int, float]:
+    with sqlite3.connect(METRICS_DB, timeout=10) as connection:
+        connection.execute(
+            """INSERT INTO sessions (
+                started_at_utc, duration_seconds, word_count, audio_frame_count,
+                audio_seconds, inference_segments, completed_segments, failed_segments,
+                avg_processing_seconds, status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                metrics["started_at_utc"], metrics["duration_seconds"], metrics["word_count"],
+                metrics["audio_frame_count"], metrics["audio_seconds"],
+                metrics["inference_segments"], metrics["completed_segments"], metrics["failed_segments"],
+                metrics["avg_processing_seconds"], metrics["status"],
+            ),
+        )
+        count, average = connection.execute(
+            "SELECT COUNT(*), COALESCE(AVG(word_count), 0) FROM sessions WHERE status = 'complete'"
+        ).fetchone()
+        return int(count), float(average)
+
+
 async def _read_exact(reader: asyncio.StreamReader, size: int) -> bytes:
     try:
         return await reader.readexactly(size)
@@ -319,6 +375,14 @@ async def _serve_session(
             or first.get("sample_format") != "s16le"):
         raise ProtocolError("unsupported_audio", "Audio must be mono 16 kHz signed 16-bit little-endian PCM.")
 
+    started_at_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    started_monotonic = time.monotonic()
+    session_word_count = 0
+    audio_frame_count = 0
+    audio_byte_count = 0
+    processing_times: list[float] = []
+    session_status = "interrupted"
+
     await _send_json(writer, {
         "type": "started", "protocol_version": PROTOCOL_VERSION,
         "session_id": session_id, "sample_rate": SAMPLE_RATE,
@@ -331,6 +395,7 @@ async def _serve_session(
     failed_segments: list[int] = []
 
     async def transcriber() -> None:
+        nonlocal session_word_count
         while True:
             segment = await work_queue.get()
             if segment is None:
@@ -338,12 +403,19 @@ async def _serve_session(
             started = time.monotonic()
             try:
                 text = await asyncio.to_thread(_transcribe_pcm, engine, model, segment.pcm)
+                elapsed = time.monotonic() - started
+                processing_times.append(elapsed)
+                session_word_count += _count_words(text)
                 await outgoing.put({
                     "type": "transcript_segment", "session_id": session_id,
                     "segment_index": segment.index, "text": text,
                 })
-                log.info("segment_complete session=%s index=%d elapsed=%.2fs", session_id, segment.index, time.monotonic() - started)
+                log.info(
+                    "segment_complete session=%s index=%d elapsed=%.2fs words_so_far=%d",
+                    session_id, segment.index, elapsed, session_word_count,
+                )
             except Exception as exc:
+                processing_times.append(time.monotonic() - started)
                 log.exception("transcription_failed session=%s index=%d", session_id, segment.index)
                 failed_segments.append(segment.index)
                 await outgoing.put({
@@ -373,6 +445,8 @@ async def _serve_session(
             if opcode == 0x2:
                 if not payload or len(payload) % SAMPLE_WIDTH:
                     raise ProtocolError("bad_audio_frame", "PCM frames must contain complete 16-bit samples.", 1003)
+                audio_frame_count += 1
+                audio_byte_count += len(payload)
                 pending.extend(payload)
                 while len(pending) >= SEGMENT_BYTES:
                     chunk = bytes(pending[:SEGMENT_BYTES])
@@ -404,6 +478,7 @@ async def _serve_session(
             "status": "partial" if failed_segments else "complete",
             "failed_segment_indices": failed_segments,
         })
+        session_status = "partial" if failed_segments else "complete"
         await outgoing.put(None)
         await sender
     finally:
@@ -412,6 +487,39 @@ async def _serve_session(
         if not sender.done():
             sender.cancel()
         await asyncio.gather(worker, sender, return_exceptions=True)
+        duration_seconds = time.monotonic() - started_monotonic
+        avg_processing_seconds = (
+            sum(processing_times) / len(processing_times) if processing_times else None
+        )
+        metrics = {
+            "started_at_utc": started_at_utc,
+            "duration_seconds": duration_seconds,
+            "word_count": session_word_count,
+            "audio_frame_count": audio_frame_count,
+            "audio_seconds": audio_byte_count / (SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH),
+            "inference_segments": len(processing_times),
+            "completed_segments": len(processing_times) - len(failed_segments),
+            "failed_segments": len(failed_segments),
+            "avg_processing_seconds": avg_processing_seconds,
+            "status": session_status,
+        }
+        try:
+            historical_sessions, historical_average_words = await asyncio.to_thread(
+                _store_session_metrics, metrics
+            )
+            log.info(
+                "session_metrics started_at_utc=%s duration_seconds=%.2f words=%d "
+                "audio_frames=%d audio_seconds=%.2f inference_segments=%d completed_segments=%d "
+                "failed_segments=%d avg_processing_seconds=%s historical_complete_sessions=%d "
+                "historical_average_words=%.1f status=%s",
+                started_at_utc, duration_seconds, session_word_count, audio_frame_count,
+                metrics["audio_seconds"], len(processing_times), metrics["completed_segments"],
+                len(failed_segments),
+                f"{avg_processing_seconds:.2f}" if avg_processing_seconds is not None else "n/a",
+                historical_sessions, historical_average_words, session_status,
+            )
+        except Exception:
+            log.exception("session_metrics_persist_failed")
 
 
 async def _handle_client(
@@ -466,6 +574,7 @@ async def run_server() -> None:
     log.info("Loading the existing cached Parakeet model; downloads are disabled.")
     model, device = await asyncio.to_thread(_load_cached_model, engine)
     log.info("Parakeet ready device=%s", device)
+    await asyncio.to_thread(_initialize_metrics_store)
 
     server = await asyncio.start_server(
         lambda reader, writer: _handle_client(reader, writer, engine, model),

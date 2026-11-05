@@ -1,5 +1,6 @@
 ﻿# Local smoke-test artifacts
 .echonote-smoke-runtime/
+.echonote-runtime/
 
 # Python
 __pycache__/
