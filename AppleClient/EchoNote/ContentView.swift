@@ -22,7 +22,7 @@ struct ContentView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         .tint(viewModel.isRecording ? .red : .accentColor)
-                        .disabled(viewModel.isStarting)
+                        .disabled(viewModel.isStarting || viewModel.connectionState != .connected)
 
                         transcriptHeader
 
@@ -57,6 +57,9 @@ struct ContentView: View {
             }
             .navigationTitle("EchoNote")
             .navigationBarTitleDisplayMode(.inline)
+        }
+        .task {
+            viewModel.checkServer()
         }
     }
 

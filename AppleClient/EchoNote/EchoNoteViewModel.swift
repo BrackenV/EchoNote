@@ -101,7 +101,7 @@ final class EchoNoteViewModel: ObservableObject {
         } catch {
             await transport?.disconnect()
             transport = nil
-            status = error.localizedDescription
+            connectionState = .unavailable("Start failed: \(error.localizedDescription)")
         }
         isStarting = false
     }
