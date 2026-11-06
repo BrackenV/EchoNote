@@ -51,6 +51,7 @@ MAX_FRAME_BYTES = 256 * 1024
 MAX_MESSAGE_BYTES = MAX_FRAME_BYTES
 TRANSCRIPTION_QUEUE_SIZE = 3
 PROTOCOL_VERSION = 1
+WEBSOCKET_IDLE_TIMEOUT_SECONDS = 10
 
 logging.basicConfig(level=os.environ.get("ECHONOTE_LOG_LEVEL", "INFO"))
 log = logging.getLogger("echonote.server")
@@ -467,7 +468,20 @@ async def _serve_session(
     sender = asyncio.create_task(send_results(), name="echonote-result-sender")
     try:
         while True:
-            opcode, payload = await _read_frame(reader)
+            try:
+                opcode, payload = await asyncio.wait_for(
+                    _read_frame(reader), timeout=WEBSOCKET_IDLE_TIMEOUT_SECONDS
+                )
+            except TimeoutError as exc:
+                log.info(
+                    "session_idle_timeout session=%s seconds=%d",
+                    session_id, WEBSOCKET_IDLE_TIMEOUT_SECONDS,
+                )
+                raise ProtocolError(
+                    "idle_timeout",
+                    f"No WebSocket message received for {WEBSOCKET_IDLE_TIMEOUT_SECONDS} seconds. Reconnect and try again.",
+                    1013,
+                ) from exc
             if opcode == 0x9:
                 await _send_frame(writer, 0xA, payload)
                 continue

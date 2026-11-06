@@ -84,6 +84,7 @@ Reject duplicate starts, malformed frames, oversized messages, unexpected contro
 | Model/cache unavailable | Fail startup clearly; never silently trigger a second model download |
 | Bad start metadata or audio format | Reject with actionable protocol error |
 | Client disconnects | Stop intake, release buffers, apply the documented pending-work policy |
+| No inbound WebSocket message for 10 seconds after start | Send an `idle_timeout` error, close with code 1013, and release the active-session slot so the client can start a new session |
 | Queue reaches limit | Apply backpressure or terminate clearly; never silently drop audio |
 | Parakeet inference fails | Report segment/session failure and keep already returned text available |
 | Stop with partial audio | Transcribe the remainder before `final` |

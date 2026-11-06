@@ -3,7 +3,8 @@ $ErrorActionPreference = "Stop"
 $python = "D:\LectureTranscriber\venv\Scripts\python.exe"
 $lectureTranscriber = "C:\Users\ellih\Desktop\Personal\University Work Y1\Lecture Transcriber"
 $modelRoot = "C:\LectureTranscriberModel\SharedParakeet"
-$runtimeRoot = Join-Path $PSScriptRoot ".echonote-smoke-runtime"
+$runtimeRoot = Join-Path $PSScriptRoot ".echonote-runtime"
+$legacyRuntimeRoot = Join-Path $PSScriptRoot ".echonote-smoke-runtime"
 $tailscaleAddress = Get-NetIPAddress -InterfaceAlias "Tailscale" -AddressFamily IPv4 |
     Where-Object { $_.IPAddress -notlike "169.254*" } |
     Select-Object -First 1 -ExpandProperty IPAddress
@@ -21,6 +22,14 @@ if (-not $tailscaleAddress) {
 $listener = Get-NetTCPConnection -LocalPort 8765 -State Listen -ErrorAction SilentlyContinue
 if ($listener) {
     throw "Port 8765 is already in use. Check whether EchoNote is already running before starting another copy."
+}
+
+if (Test-Path -LiteralPath $legacyRuntimeRoot) {
+    if (Test-Path -LiteralPath $runtimeRoot) {
+        throw "Both runtime folders exist. Stop EchoNote and merge them before launching: $legacyRuntimeRoot and $runtimeRoot"
+    }
+    Move-Item -LiteralPath $legacyRuntimeRoot -Destination $runtimeRoot
+    Write-Host "Moved existing runtime data to $runtimeRoot"
 }
 
 New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null

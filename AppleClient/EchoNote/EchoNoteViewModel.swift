@@ -192,6 +192,16 @@ final class EchoNoteViewModel: ObservableObject {
             eventTask = nil
         case .error(let message):
             status = "Server error: \(message)"
+        case .disconnected(let message):
+            audioEngine.inputNode.removeTap(onBus: 0)
+            audioEngine.stop()
+            isRecording = false
+            timer?.invalidate()
+            timer = nil
+            try? AVAudioSession.sharedInstance().setActive(false)
+            transport = nil
+            eventTask = nil
+            status = "Disconnected: \(message) Start a new recording to reconnect."
         }
     }
 

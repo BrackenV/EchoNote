@@ -40,6 +40,7 @@ enum ServerEvent: Sendable {
     case transcript(index: Int, text: String)
     case final(failed: [Int])
     case error(String)
+    case disconnected(String)
 }
 
 actor EchoNoteTransport {
@@ -150,8 +151,14 @@ actor EchoNoteTransport {
                 }
             }
         } catch {
-            eventContinuation.yield(.error("Connection closed: \(error.localizedDescription)"))
+            eventContinuation.yield(.disconnected(error.localizedDescription))
             eventContinuation.finish()
+            socket.cancel(with: .goingAway, reason: nil)
+            self.socket = nil
+            writer?.cancel()
+            writer = nil
+            pending.removeAll()
+            pendingBytes = 0
         }
     }
 
