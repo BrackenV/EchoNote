@@ -5,35 +5,47 @@ struct ContentView: View {
     @ObservedObject var viewModel: EchoNoteViewModel
     @Environment(\.scenePhase) private var scenePhase
     @State private var spherePulse = false
+    @State private var transcriptExpanded = true
+    @State private var transcriptVisible = false
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
-                    VStack(spacing: 14) {
+                    VStack(spacing: 24) {
                         recordingSphere
                             .id("top")
-                        connectionStatus
+                        recordingStatus
                         audioSettings
                         transcriptHeader
 
-                        Group {
-                            if viewModel.transcript.isEmpty {
-                                Text("Start recording and recognized speech will appear here.")
-                                    .foregroundStyle(.secondary)
-                            } else {
-                                Text(viewModel.transcript)
-                                    .textSelection(.enabled)
+                        if transcriptExpanded {
+                            Group {
+                                if viewModel.transcript.isEmpty {
+                                    Text("Start recording and recognized speech will appear here.")
+                                        .foregroundStyle(.white.opacity(0.55))
+                                } else {
+                                    Text(viewModel.transcript)
+                                        .foregroundStyle(.white)
+                                        .textSelection(.enabled)
+                                        .opacity(transcriptVisible ? 1 : 0)
+                                        .onAppear {
+                                            withAnimation(.easeIn(duration: 0.65)) { transcriptVisible = true }
+                                        }
+                                        .animation(.easeIn(duration: 0.65), value: transcriptVisible)
+                                        .transition(.opacity)
+                                }
                             }
+                            .font(.body)
+                            .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+                            .animation(.easeInOut(duration: 0.25), value: transcriptExpanded)
                         }
-                        .font(.body)
-                        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-                        .padding(12)
-                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                     }
                     .frame(maxWidth: 560)
                     .frame(maxWidth: .infinity)
-                    .padding()
+                    .padding(.horizontal, 22)
+                    .padding(.top, 24)
+                    .padding(.bottom, 22)
                 }
                 .scrollIndicators(.visible)
                 .scrollBounceBehavior(.always)
@@ -57,11 +69,34 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { viewModel.refreshElapsedTime() }
         }
+        .onChange(of: viewModel.transcript.isEmpty) { _, isEmpty in
+            if isEmpty { transcriptVisible = false }
+        }
         .onAppear {
             withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
                 spherePulse = true
             }
         }
+        .overlay(alignment: .top) {
+            if let error = bannerError {
+                HStack(alignment: .top, spacing: 10) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.subheadline.weight(.medium))
+                        .foregroundStyle(.white)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .padding(14)
+                .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .overlay(RoundedRectangle(cornerRadius: 16).stroke(.white.opacity(0.12), lineWidth: 1))
+                .padding(.horizontal, 12)
+                .padding(.top, 8)
+                .transition(.move(edge: .top).combined(with: .opacity))
+                .zIndex(2)
+            }
+        }
+        .animation(.spring(response: 0.42, dampingFraction: 0.84), value: bannerError)
     }
 
     private var recordingSphere: some View {
@@ -93,27 +128,27 @@ struct ContentView: View {
         .disabled(viewModel.isStarting || (!viewModel.isRecording && !isServerReady))
         .accessibilityLabel(sphereAccessibilityLabel)
         .accessibilityHint(viewModel.isRecording ? "Stops the current recording" : "Starts a recording")
-        .padding(.top, 14)
+        .padding(.top, 30)
     }
 
-    private var connectionStatus: some View {
-        HStack(spacing: 10) {
-            Circle()
-                .fill(viewModel.isRecording ? .red : (viewModel.isStarting ? .orange : connectionColor))
-                .frame(width: 11, height: 11)
-            Text(viewModel.isRecording || viewModel.isStarting ? viewModel.status : viewModel.connectionSummary)
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-                .lineLimit(2)
-            Spacer(minLength: 4)
-            if viewModel.isRecording {
+    @ViewBuilder
+    private var recordingStatus: some View {
+        if viewModel.isRecording {
+            HStack {
+                Text("Recording")
+                Spacer()
                 Text(viewModel.elapsedText)
                     .monospacedDigit()
-                    .font(.subheadline.weight(.medium))
+                    .fontWeight(.medium)
             }
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 4)
+        } else if viewModel.isStarting {
+            Text(viewModel.status)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
         }
-        .frame(minHeight: 26)
-        .accessibilityElement(children: .combine)
     }
 
     private var audioSettings: some View {
@@ -146,8 +181,19 @@ struct ContentView: View {
 
     private var transcriptHeader: some View {
         HStack {
-            Text("Transcript")
-                .font(.title3.bold())
+            Button {
+                withAnimation(.easeInOut(duration: 0.25)) { transcriptExpanded.toggle() }
+            } label: {
+                HStack(spacing: 7) {
+                    Text("Transcript")
+                        .font(.title3.bold())
+                    Image(systemName: transcriptExpanded ? "chevron.down" : "chevron.right")
+                        .font(.caption.weight(.bold))
+                }
+                .foregroundStyle(.white)
+            }
+            .buttonStyle(.plain)
+            .accessibilityHint(transcriptExpanded ? "Hides the transcript" : "Shows the transcript")
             if !viewModel.transcript.isEmpty {
                 Button {
                     UIPasteboard.general.string = viewModel.transcript
@@ -163,17 +209,6 @@ struct ContentView: View {
             Spacer()
         }
         .padding(.top, 2)
-    }
-
-    private var connectionColor: Color {
-        switch viewModel.connectionState {
-        case .connected:
-            return .green
-        case .checking:
-            return .orange
-        case .unavailable:
-            return .red
-        }
     }
 
     private var isServerReady: Bool {
@@ -204,5 +239,13 @@ struct ContentView: View {
         if case .unavailable = viewModel.connectionState { return "Server unavailable" }
         if case .checking = viewModel.connectionState { return "Checking server" }
         return "Start recording"
+    }
+
+    private var bannerError: String? {
+        if case .unavailable(let message) = viewModel.connectionState { return message }
+        for prefix in ["Server error:", "Audio send failed:", "Disconnected:", "Stopped ·"] {
+            if viewModel.status.hasPrefix(prefix) { return viewModel.status }
+        }
+        return nil
     }
 }
