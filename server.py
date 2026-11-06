@@ -45,8 +45,8 @@ PORT = int(os.environ.get("ECHONOTE_PORT", "8765"))
 SAMPLE_RATE = 16_000
 CHANNELS = 1
 SAMPLE_WIDTH = 2
-SEGMENT_SECONDS = 10
-SEGMENT_BYTES = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH * SEGMENT_SECONDS
+DEFAULT_SEGMENT_SECONDS = 10
+ALLOWED_SEGMENT_SECONDS = {5, 10, 15, 30}
 MAX_FRAME_BYTES = 256 * 1024
 MAX_MESSAGE_BYTES = MAX_FRAME_BYTES
 TRANSCRIPTION_QUEUE_SIZE = 3
@@ -395,6 +395,14 @@ async def _serve_session(
     if (first.get("sample_rate") != SAMPLE_RATE or first.get("channels") != CHANNELS
             or first.get("sample_format") != "s16le"):
         raise ProtocolError("unsupported_audio", "Audio must be mono 16 kHz signed 16-bit little-endian PCM.")
+    segment_seconds = first.get("segment_seconds", DEFAULT_SEGMENT_SECONDS)
+    if (isinstance(segment_seconds, bool) or not isinstance(segment_seconds, int)
+            or segment_seconds not in ALLOWED_SEGMENT_SECONDS):
+        raise ProtocolError("bad_segment_duration", "Segment duration must be 5, 10, 15, or 30 seconds.")
+    vad_enabled = first.get("vad_enabled", False)
+    if not isinstance(vad_enabled, bool):
+        raise ProtocolError("bad_vad_setting", "vad_enabled must be a boolean.")
+    segment_bytes = SAMPLE_RATE * CHANNELS * SAMPLE_WIDTH * segment_seconds
 
     try:
         transcript_path = _create_transcript_file(session_id)
@@ -415,6 +423,7 @@ async def _serve_session(
         "type": "started", "protocol_version": PROTOCOL_VERSION,
         "session_id": session_id, "sample_rate": SAMPLE_RATE,
         "channels": CHANNELS, "sample_format": "s16le",
+        "segment_seconds": segment_seconds, "vad_enabled": vad_enabled,
     })
     work_queue: asyncio.Queue[AudioSegment | None] = asyncio.Queue(maxsize=TRANSCRIPTION_QUEUE_SIZE)
     outgoing: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
@@ -493,9 +502,9 @@ async def _serve_session(
                 audio_frame_count += 1
                 audio_byte_count += len(payload)
                 pending.extend(payload)
-                while len(pending) >= SEGMENT_BYTES:
-                    chunk = bytes(pending[:SEGMENT_BYTES])
-                    del pending[:SEGMENT_BYTES]
+                while len(pending) >= segment_bytes:
+                    chunk = bytes(pending[:segment_bytes])
+                    del pending[:segment_bytes]
                     await work_queue.put(AudioSegment(next_segment_index, chunk))
                     next_segment_index += 1
                 continue
@@ -505,10 +514,20 @@ async def _serve_session(
                 control = json.loads(payload.decode("utf-8"))
             except (UnicodeError, json.JSONDecodeError) as exc:
                 raise ProtocolError("bad_json", "Control message must be valid JSON.") from exc
-            if not isinstance(control, dict) or control.get("type") != "stop":
-                raise ProtocolError("unexpected_control", "Only stop is valid after start.")
+            if not isinstance(control, dict):
+                raise ProtocolError("unexpected_control", "Control messages must be JSON objects.")
             if control.get("session_id") != session_id:
-                raise ProtocolError("bad_session", "Stop session_id does not match start.")
+                raise ProtocolError("bad_session", "Control session_id does not match start.")
+            if control.get("type") == "keepalive":
+                continue
+            if control.get("type") == "segment_end":
+                if pending:
+                    await work_queue.put(AudioSegment(next_segment_index, bytes(pending)))
+                    pending.clear()
+                    next_segment_index += 1
+                continue
+            if control.get("type") != "stop":
+                raise ProtocolError("unexpected_control", "Only keepalive, segment_end, and stop are valid after start.")
             if pending:
                 await work_queue.put(AudioSegment(next_segment_index, bytes(pending)))
                 pending.clear()

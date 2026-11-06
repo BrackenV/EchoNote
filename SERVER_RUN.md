@@ -16,9 +16,9 @@ The server listens on port `8765`; set `ECHONOTE_PORT` to change it. The server 
 
 The app connects outward to the PC, so the phone address is not entered in the app or required by the server. The app checks the PC with a `health` WebSocket message; this confirms that the PC is reachable over Tailscale, without starting a recording session.
 
-The server requires one active session, protocol version `1`, mono 16 kHz signed 16-bit little-endian PCM, and a JSON `start` control message containing `session_id`, `sample_rate`, `channels`, and `sample_format`. Send each audio chunk as a WebSocket binary message. Send JSON `{"type":"stop","session_id":"..."}` to flush the last partial segment and receive the final status.
+The server requires one active session, protocol version `1`, mono 16 kHz signed 16-bit little-endian PCM, and a JSON `start` control message containing `session_id`, `sample_rate`, `channels`, `sample_format`, `segment_seconds`, and `vad_enabled`. Send each audio chunk as a WebSocket binary message. With VAD enabled, use `segment_end` after a speech pause and `keepalive` while quiet. Send JSON `{"type":"stop","session_id":"..."}` to flush the last partial segment and receive the final status.
 
-Audio is grouped into 10-second transcription segments. Interim text therefore arrives less often than with shorter segments; Stop flushes and transcribes any remaining audio immediately.
+Without voice activity detection, audio is grouped into the selected 5, 10, 15, or 30-second transcription segments. With voice activity detection enabled, the iPhone sends voiced audio with a short pre-roll and trailing tail, and closes a segment after a pause; long speech is still split into 10-second maximum segments. Stop flushes and transcribes any remaining audio immediately.
 
 After a recording starts, the server closes the WebSocket if it receives no inbound WebSocket message for 10 seconds. It sends an `idle_timeout` error and closes with code `1013`, then releases the single-session slot. The iPhone client stops capture, preserves text already received, and returns to Start recording so a fresh session can reconnect.
 
@@ -36,5 +36,5 @@ The server creates a new UTF-8 `.txt` file for each accepted recording in `.echo
 
 ## Current limitations
 
-- WSS certificate handling, reconnects, silence-aware segment boundaries, overlap reconciliation, and client-side sequence metadata are future protocol decisions.
+- WSS certificate handling, reconnects, overlap reconciliation, and client-side sequence metadata are future protocol decisions.
 - A segment failure is reported and included in `final.failed_segment_indices`; the server continues processing later accepted segments.

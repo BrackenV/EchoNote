@@ -2,6 +2,129 @@ import AVFoundation
 import Combine
 import Foundation
 
+private struct AudioCaptureOutput: Sendable {
+    let pcmChunks: [Data]
+    let endsSegment: Bool
+    let keepAlive: Bool
+}
+
+private final class VoiceActivityGate: @unchecked Sendable {
+    private let lock = NSLock()
+    private let bytesPerSecond = 16_000 * 2
+    private let speechThreshold = 0.012
+    private let endSilenceSeconds = 0.75
+    private let preRollSeconds = 0.25
+    private let trailingAudioSeconds = 0.15
+    private var isSpeaking = false
+    private var preRoll: [Data] = []
+    private var preRollBytes = 0
+    private var candidateSpeechSeconds = 0.0
+    private var trailingSilence: [Data] = []
+    private var trailingSilenceBytes = 0
+    private var lastActivityTime = Date.timeIntervalSinceReferenceDate
+
+    func process(_ pcm: Data) -> AudioCaptureOutput {
+        lock.lock()
+        defer { lock.unlock() }
+        let duration = Double(pcm.count) / Double(bytesPerSecond)
+        let isVoiced = rms(of: pcm) >= speechThreshold
+
+        if isSpeaking {
+            if isVoiced {
+                let chunks = trailingSilence + [pcm]
+                trailingSilence.removeAll(keepingCapacity: true)
+                trailingSilenceBytes = 0
+                lastActivityTime = Date.timeIntervalSinceReferenceDate
+                return AudioCaptureOutput(pcmChunks: chunks, endsSegment: false, keepAlive: false)
+            }
+            trailingSilence.append(pcm)
+            trailingSilenceBytes += pcm.count
+            let silenceDuration = Double(trailingSilenceBytes) / Double(bytesPerSecond)
+            guard silenceDuration >= endSilenceSeconds else {
+                return AudioCaptureOutput(pcmChunks: [], endsSegment: false, keepAlive: false)
+            }
+            let tailBytes = Int(Double(bytesPerSecond) * trailingAudioSeconds)
+            let tail = Self.prefix(tailBytes, from: trailingSilence)
+            isSpeaking = false
+            trailingSilence.removeAll(keepingCapacity: true)
+            trailingSilenceBytes = 0
+            preRoll.removeAll(keepingCapacity: true)
+            preRollBytes = 0
+            candidateSpeechSeconds = 0
+            lastActivityTime = Date.timeIntervalSinceReferenceDate
+            return AudioCaptureOutput(pcmChunks: tail.isEmpty ? [] : [tail], endsSegment: true, keepAlive: false)
+        }
+
+        appendToPreRoll(pcm)
+        if isVoiced {
+            candidateSpeechSeconds += duration
+            if candidateSpeechSeconds >= 0.06 {
+                isSpeaking = true
+                candidateSpeechSeconds = 0
+                lastActivityTime = Date.timeIntervalSinceReferenceDate
+                let chunks = preRoll
+                preRoll.removeAll(keepingCapacity: true)
+                preRollBytes = 0
+                return AudioCaptureOutput(pcmChunks: chunks, endsSegment: false, keepAlive: false)
+            }
+        } else {
+            candidateSpeechSeconds = 0
+        }
+
+        let now = Date.timeIntervalSinceReferenceDate
+        if now - lastActivityTime >= 5 {
+            lastActivityTime = now
+            return AudioCaptureOutput(pcmChunks: [], endsSegment: false, keepAlive: true)
+        }
+        return AudioCaptureOutput(pcmChunks: [], endsSegment: false, keepAlive: false)
+    }
+
+    func finish() -> AudioCaptureOutput {
+        lock.lock()
+        defer { lock.unlock() }
+        guard isSpeaking else { return AudioCaptureOutput(pcmChunks: [], endsSegment: false, keepAlive: false) }
+        let tailBytes = Int(Double(bytesPerSecond) * trailingAudioSeconds)
+        let tail = Self.prefix(tailBytes, from: trailingSilence)
+        isSpeaking = false
+        trailingSilence.removeAll(keepingCapacity: true)
+        trailingSilenceBytes = 0
+        return AudioCaptureOutput(pcmChunks: tail.isEmpty ? [] : [tail], endsSegment: true, keepAlive: false)
+    }
+
+    private func appendToPreRoll(_ pcm: Data) {
+        let maximumBytes = Int(Double(bytesPerSecond) * preRollSeconds)
+        preRoll.append(pcm)
+        preRollBytes += pcm.count
+        while preRollBytes > maximumBytes, !preRoll.isEmpty {
+            preRollBytes -= preRoll.removeFirst().count
+        }
+    }
+
+    private func rms(of data: Data) -> Double {
+        let sampleCount = data.count / MemoryLayout<Int16>.size
+        guard sampleCount > 0 else { return 0 }
+        var sumSquares = 0.0
+        data.withUnsafeBytes { rawBuffer in
+            for byteOffset in stride(from: 0, to: sampleCount * 2, by: 2) {
+                let rawSample = rawBuffer.loadUnaligned(fromByteOffset: byteOffset, as: Int16.self)
+                let sample = Double(Int16(littleEndian: rawSample)) / 32_768.0
+                sumSquares += sample * sample
+            }
+        }
+        return sqrt(sumSquares / Double(sampleCount))
+    }
+
+    private static func prefix(_ byteCount: Int, from chunks: [Data]) -> Data {
+        var result = Data()
+        for chunk in chunks {
+            let remaining = byteCount - result.count
+            guard remaining > 0 else { break }
+            result.append(chunk.prefix(remaining))
+        }
+        return result
+    }
+}
+
 enum EchoNoteConnectionState: Equatable {
     case checking
     case connected
@@ -16,6 +139,12 @@ final class EchoNoteViewModel: ObservableObject {
     @Published private(set) var connectionState: EchoNoteConnectionState = .checking
     @Published private(set) var transcript = ""
     @Published private(set) var elapsedText = "00:00"
+    @Published var voiceActivityEnabled = UserDefaults.standard.object(forKey: "echoNote.voiceActivityEnabled") as? Bool ?? true {
+        didSet { UserDefaults.standard.set(voiceActivityEnabled, forKey: "echoNote.voiceActivityEnabled") }
+    }
+    @Published var segmentSeconds = UserDefaults.standard.object(forKey: "echoNote.segmentSeconds") as? Int ?? 10 {
+        didSet { UserDefaults.standard.set(segmentSeconds, forKey: "echoNote.segmentSeconds") }
+    }
 
     private let audioEngine = AVAudioEngine()
     private var converter: AVAudioConverter?
@@ -26,6 +155,9 @@ final class EchoNoteViewModel: ObservableObject {
     private var lastSegmentIndex = -1
     private var eventTask: Task<Void, Never>?
     private var healthTask: Task<Void, Never>?
+    private var captureContinuation: AsyncStream<AudioCaptureOutput>.Continuation?
+    private var captureSenderTask: Task<Void, Never>?
+    private var voiceActivityGate: VoiceActivityGate?
 
     var connectionSummary: String {
         switch connectionState {
@@ -82,16 +214,23 @@ final class EchoNoteViewModel: ObservableObject {
             try await requestMicrophonePermission()
             sessionID = UUID().uuidString
             lastSegmentIndex = -1
+            let vadEnabled = voiceActivityEnabled
+            let segmentLength = vadEnabled ? 10 : segmentSeconds
             let client = EchoNoteTransport()
             transport = client
-            try await client.connect(url: EchoNoteConfiguration.serverURL, sessionID: sessionID)
+            try await client.connect(
+                url: EchoNoteConfiguration.serverURL,
+                sessionID: sessionID,
+                segmentSeconds: segmentLength,
+                voiceActivityEnabled: vadEnabled
+            )
             eventTask = Task { [weak self, client] in
                 for await event in client.events {
                     guard let self else { return }
                     self.handle(event)
                 }
             }
-            try startAudioCapture(transport: client)
+            try startAudioCapture(transport: client, voiceActivityEnabled: vadEnabled)
             isRecording = true
             startTime = Date()
             status = "Recording · connected"
@@ -99,6 +238,11 @@ final class EchoNoteViewModel: ObservableObject {
                 Task { @MainActor in self?.updateElapsed() }
             }
         } catch {
+            captureContinuation?.finish()
+            captureSenderTask?.cancel()
+            captureContinuation = nil
+            captureSenderTask = nil
+            voiceActivityGate = nil
             await transport?.disconnect()
             transport = nil
             connectionState = .unavailable("Start failed: \(error.localizedDescription)")
@@ -111,7 +255,7 @@ final class EchoNoteViewModel: ObservableObject {
         guard granted else { throw ClientError.microphoneDenied }
     }
 
-    private func startAudioCapture(transport: EchoNoteTransport) throws {
+    private func startAudioCapture(transport: EchoNoteTransport, voiceActivityEnabled: Bool) throws {
         let audioSession = AVAudioSession.sharedInstance()
         do {
             try audioSession.setCategory(.record, mode: .measurement)
@@ -132,17 +276,48 @@ final class EchoNoteViewModel: ObservableObject {
             throw ClientError.audioFormatUnavailable
         }
         self.converter = converter
+        let gate = voiceActivityEnabled ? VoiceActivityGate() : nil
+        voiceActivityGate = gate
+        var continuation: AsyncStream<AudioCaptureOutput>.Continuation!
+        let stream = AsyncStream<AudioCaptureOutput>(bufferingPolicy: .bufferingOldest(128)) {
+            continuation = $0
+        }
+        captureContinuation = continuation
+        let currentSessionID = sessionID
+        captureSenderTask = Task { [weak self, transport] in
+            for await output in stream {
+                do {
+                    for pcm in output.pcmChunks { try await transport.enqueueAudio(pcm) }
+                    if output.endsSegment { try await transport.endSegment(sessionID: currentSessionID) }
+                    if output.keepAlive { try await transport.keepAlive(sessionID: currentSessionID) }
+                } catch {
+                    await MainActor.run {
+                        self?.captureContinuation?.finish()
+                        self?.captureFailed(error)
+                    }
+                    return
+                }
+            }
+        }
         input.installTap(onBus: 0, bufferSize: 4096, format: sourceFormat) { [weak self] buffer, _ in
             guard let self, let converted = self.convert(buffer, using: converter) else { return }
-            Task {
-                do { try await transport.enqueueAudio(converted) }
-                catch { await MainActor.run { self.captureFailed(error) } }
+            let output = gate?.process(converted) ?? AudioCaptureOutput(
+                pcmChunks: [converted], endsSegment: false, keepAlive: false
+            )
+            guard !output.pcmChunks.isEmpty || output.endsSegment || output.keepAlive else { return }
+            if case .dropped = continuation.yield(output) {
+                Task { @MainActor in self.captureFailed(ClientError.audioQueueOverflow) }
             }
         }
         audioEngine.prepare()
         do { try audioEngine.start() }
         catch {
             input.removeTap(onBus: 0)
+            captureContinuation?.finish()
+            captureSenderTask?.cancel()
+            captureContinuation = nil
+            captureSenderTask = nil
+            voiceActivityGate = nil
             try? audioSession.setActive(false)
             throw error
         }
@@ -174,6 +349,15 @@ final class EchoNoteViewModel: ObservableObject {
         status = "Finishing transcription…"
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
+        if let finalOutput = voiceActivityGate?.finish(),
+           !finalOutput.pcmChunks.isEmpty || finalOutput.endsSegment {
+            _ = captureContinuation?.yield(finalOutput)
+        }
+        captureContinuation?.finish()
+        await captureSenderTask?.value
+        captureContinuation = nil
+        captureSenderTask = nil
+        voiceActivityGate = nil
         isRecording = false
         timer?.invalidate()
         timer = nil
@@ -203,6 +387,10 @@ final class EchoNoteViewModel: ObservableObject {
             isRecording = false
             timer?.invalidate()
             timer = nil
+            captureContinuation?.finish()
+            captureContinuation = nil
+            captureSenderTask = nil
+            voiceActivityGate = nil
             try? AVAudioSession.sharedInstance().setActive(false)
             transport = nil
             eventTask = nil
@@ -226,6 +414,7 @@ enum ClientError: LocalizedError {
     case microphoneDenied
     case audioFormatUnavailable
     case audioSessionActivationFailed
+    case audioQueueOverflow
     case server(String)
 
     var errorDescription: String? {
@@ -234,6 +423,8 @@ enum ClientError: LocalizedError {
         case .audioFormatUnavailable: return "Could not prepare the microphone audio format."
         case .audioSessionActivationFailed:
             return "iOS couldn't activate the microphone. A Discord or phone call may be using it; leave the call, then try again."
+        case .audioQueueOverflow:
+            return "Audio processing fell behind. Stop and start a new recording."
         case .server(let message): return message
         }
     }

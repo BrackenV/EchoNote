@@ -26,7 +26,7 @@ The project uses NeMo `ASRModel.from_pretrained` with the identifier above. Echo
 1. Accept a WebSocket connection and validate protocol version, session identifier, and a `start` message describing the audio format.
 2. Validate that audio is mono PCM, signed 16-bit little-endian, at a negotiated sample rate (target 16 kHz); reject unsupported formats with a clear error.
 3. Receive bounded binary frames continuously while segmentation and inference work proceed independently.
-4. Assemble incoming frames into configurable 10-second inference segments. This lowers inference-call frequency but delays interim transcript updates; Stop still flushes any shorter final segment. Boundary-overlap handling remains a later improvement.
+4. Assemble incoming frames into client-selected 5, 10, 15, or 30-second inference segments. When client voice activity detection is enabled, accept `segment_end` controls to flush at pauses; Stop still flushes any shorter final segment. Boundary-overlap handling remains a later improvement.
 5. Submit complete segments to a bounded queue. Run one Parakeet inference worker initially, off the asyncio event loop, because safe concurrent model inference is not established.
 6. Return transcript results with session ID and monotonically increasing segment index. The client can then render them in order; the server should emit in order as a simpler default.
 7. On `stop`, stop accepting audio, flush the partial segment, finish queued inference, send a `final` message, and close cleanly.

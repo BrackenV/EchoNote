@@ -58,7 +58,7 @@ actor EchoNoteTransport {
         eventContinuation = continuation
     }
 
-    func connect(url: URL, sessionID: String) async throws {
+    func connect(url: URL, sessionID: String, segmentSeconds: Int, voiceActivityEnabled: Bool) async throws {
         var request = URLRequest(url: url)
         request.timeoutInterval = 15
         let task = URLSession.shared.webSocketTask(with: request)
@@ -66,7 +66,8 @@ actor EchoNoteTransport {
         task.resume()
         let start: [String: Any] = [
             "type": "start", "protocol_version": 1, "session_id": sessionID,
-            "sample_rate": 16_000, "channels": 1, "sample_format": "s16le"
+            "sample_rate": 16_000, "channels": 1, "sample_format": "s16le",
+            "segment_seconds": segmentSeconds, "vad_enabled": voiceActivityEnabled
         ]
         try await task.send(.string(try Self.json(start)))
         let reply = try await task.receive()
@@ -78,8 +79,10 @@ actor EchoNoteTransport {
             throw ClientError.server(message["message"] as? String ?? "The server rejected the connection.")
         }
         guard message["type"] as? String == "started", message["protocol_version"] as? Int == 1,
-              message["session_id"] as? String == sessionID else {
-            throw ClientError.server("The server response did not match this session.")
+              message["session_id"] as? String == sessionID,
+              message["segment_seconds"] as? Int == segmentSeconds,
+              message["vad_enabled"] as? Bool == voiceActivityEnabled else {
+            throw ClientError.server("The PC server needs updating. Pull the latest EchoNote code on the PC and restart the server.")
         }
         Task { await self.receiveLoop() }
     }
@@ -92,6 +95,17 @@ actor EchoNoteTransport {
         pending.append(data)
         pendingBytes += data.count
         if writer == nil { writer = Task { await self.drainAudio() } }
+    }
+
+    func endSegment(sessionID: String) async throws {
+        while writer != nil { try await Task.sleep(for: .milliseconds(10)) }
+        guard let socket else { throw ClientError.server("The connection is closed.") }
+        try await socket.send(.string(try Self.json(["type": "segment_end", "session_id": sessionID])))
+    }
+
+    func keepAlive(sessionID: String) async throws {
+        guard let socket else { throw ClientError.server("The connection is closed.") }
+        try await socket.send(.string(try Self.json(["type": "keepalive", "session_id": sessionID])))
     }
 
     func finish(sessionID: String) async throws {

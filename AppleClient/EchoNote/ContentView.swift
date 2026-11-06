@@ -4,29 +4,17 @@ import UIKit
 struct ContentView: View {
     @ObservedObject var viewModel: EchoNoteViewModel
     @Environment(\.scenePhase) private var scenePhase
-    @State private var showingToken = false
+    @State private var spherePulse = false
 
     var body: some View {
         NavigationStack {
             ScrollViewReader { proxy in
                 ScrollView {
                     VStack(spacing: 14) {
-                        connectionSettings
+                        recordingSphere
                             .id("top")
                         connectionStatus
-
-                        Button {
-                            Task { await viewModel.toggleRecording() }
-                        } label: {
-                            Label(viewModel.isRecording ? "Stop recording" : "Start recording",
-                                  systemImage: viewModel.isRecording ? "stop.fill" : "mic.fill")
-                                .frame(maxWidth: .infinity)
-                                .padding(.vertical, 13)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .tint(viewModel.isRecording ? .red : .accentColor)
-                        .disabled(viewModel.isStarting || viewModel.connectionState != .connected)
-
+                        audioSettings
                         transcriptHeader
 
                         Group {
@@ -69,28 +57,43 @@ struct ContentView: View {
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { viewModel.refreshElapsedTime() }
         }
+        .onAppear {
+            withAnimation(.easeInOut(duration: 1.1).repeatForever(autoreverses: true)) {
+                spherePulse = true
+            }
+        }
     }
 
-    private var connectionSettings: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            HStack(spacing: 8) {
-                Image(systemName: "desktopcomputer")
-                    .foregroundStyle(.secondary)
-                Text("PC server")
-                    .font(.headline)
-                Spacer()
-                Text("TAILSCALE")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
+    private var recordingSphere: some View {
+        Button {
+            Task { await viewModel.toggleRecording() }
+        } label: {
+            ZStack {
+                Circle()
+                    .fill(RadialGradient(
+                        colors: [.white.opacity(0.72), sphereColor.opacity(0.94), sphereColor],
+                        center: .init(x: 0.32, y: 0.25),
+                        startRadius: 4,
+                        endRadius: 142
+                    ))
+                Circle()
+                    .strokeBorder(.white.opacity(0.5), lineWidth: 1.5)
+                    .padding(7)
+                Image(systemName: sphereSymbol)
+                    .font(.system(size: 48, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .contentTransition(.symbolEffect(.replace))
             }
-
-            Text(EchoNoteConfiguration.serverAddress)
-                .font(.system(.subheadline, design: .monospaced))
-                .textSelection(.enabled)
-
+            .frame(width: 168, height: 168)
+            .shadow(color: sphereColor.opacity(0.55), radius: spherePulse ? 28 : 14, y: 7)
+            .scaleEffect(spherePulse ? 1.035 : 1)
+            .animation(.easeInOut(duration: 1.1), value: spherePulse)
         }
-        .padding(14)
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .buttonStyle(.plain)
+        .disabled(viewModel.isStarting || (!viewModel.isRecording && !isServerReady))
+        .accessibilityLabel(sphereAccessibilityLabel)
+        .accessibilityHint(viewModel.isRecording ? "Stops the current recording" : "Starts a recording")
+        .padding(.top, 14)
     }
 
     private var connectionStatus: some View {
@@ -111,6 +114,34 @@ struct ContentView: View {
         }
         .frame(minHeight: 26)
         .accessibilityElement(children: .combine)
+    }
+
+    private var audioSettings: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Toggle(isOn: $viewModel.voiceActivityEnabled) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Voice activity detection")
+                        .font(.headline)
+                    Text("Send speech and split after pauses")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .disabled(viewModel.isRecording || viewModel.isStarting)
+
+            if !viewModel.voiceActivityEnabled {
+                Picker("Chunk length", selection: $viewModel.segmentSeconds) {
+                    ForEach([5, 10, 15, 30], id: \.self) { seconds in
+                        Text("\(seconds) sec").tag(seconds)
+                    }
+                }
+                .pickerStyle(.menu)
+                .disabled(viewModel.isRecording || viewModel.isStarting)
+            }
+        }
+        .padding(14)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
     private var transcriptHeader: some View {
@@ -143,5 +174,35 @@ struct ContentView: View {
         case .unavailable:
             return .red
         }
+    }
+
+    private var isServerReady: Bool {
+        if case .connected = viewModel.connectionState { return true }
+        return false
+    }
+
+    private var sphereColor: Color {
+        if viewModel.isRecording { return .red }
+        switch viewModel.connectionState {
+        case .connected: return .green
+        case .checking: return .orange
+        case .unavailable: return .red
+        }
+    }
+
+    private var sphereSymbol: String {
+        if viewModel.isStarting { return "ellipsis" }
+        if viewModel.isRecording { return "stop.fill" }
+        if case .unavailable = viewModel.connectionState { return "exclamationmark" }
+        if case .checking = viewModel.connectionState { return "ellipsis" }
+        return "record.circle.fill"
+    }
+
+    private var sphereAccessibilityLabel: String {
+        if viewModel.isStarting { return "Connecting to server" }
+        if viewModel.isRecording { return "Stop recording" }
+        if case .unavailable = viewModel.connectionState { return "Server unavailable" }
+        if case .checking = viewModel.connectionState { return "Checking server" }
+        return "Start recording"
     }
 }
