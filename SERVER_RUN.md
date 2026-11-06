@@ -18,6 +18,8 @@ The app connects outward to the PC, so the phone address is not entered in the a
 
 The server requires one active session, protocol version `1`, mono 16 kHz signed 16-bit little-endian PCM, and a JSON `start` control message containing `session_id`, `sample_rate`, `channels`, and `sample_format`. Send each audio chunk as a WebSocket binary message. Send JSON `{"type":"stop","session_id":"..."}` to flush the last partial segment and receive the final status.
 
+Audio is grouped into 10-second transcription segments. Interim text therefore arrives less often than with shorter segments; Stop flushes and transcribes any remaining audio immediately.
+
 After a recording starts, the server closes the WebSocket if it receives no inbound WebSocket message for 10 seconds. It sends an `idle_timeout` error and closes with code `1013`, then releases the single-session slot. The iPhone client stops capture, preserves text already received, and returns to Start recording so a fresh session can reconnect.
 
 The server is plain WebSocket and should be used only over the private Tailscale network; do not expose its port publicly. It logs timing and count metrics, not audio or transcript text. The existing Lecture Transcriber helper creates and removes a temporary WAV for each inference segment in `D:\LectureTranscriber\temp`.
