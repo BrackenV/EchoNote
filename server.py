@@ -580,15 +580,15 @@ async def _handle_client(
         try:
             await _send_json(writer, {"type": "error", "code": exc.code, "message": exc.message})
             await _send_frame(writer, 0x8, struct.pack("!H", exc.close_code))
-        except (ConnectionError, BrokenPipeError):
+        except OSError:
             pass
-    except (ConnectionError, BrokenPipeError):
-        log.info("client_disconnected peer=%s", peer)
+    except OSError as exc:
+        log.info("client_disconnected peer=%s error=%s", peer, exc)
     except Exception:
         log.exception("session_failed peer=%s", peer)
         try:
             await _send_json(writer, {"type": "error", "code": "server_error", "message": "The server could not finish this session."})
-        except (ConnectionError, BrokenPipeError):
+        except OSError:
             pass
     finally:
         if claimed_session:
@@ -596,8 +596,8 @@ async def _handle_client(
         writer.close()
         try:
             await writer.wait_closed()
-        except ConnectionError:
-            pass
+        except OSError as exc:
+            log.debug("websocket_close_failed peer=%s error=%s", peer, exc)
 
 
 async def run_server() -> None:
