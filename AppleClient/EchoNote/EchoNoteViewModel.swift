@@ -70,6 +70,11 @@ final class EchoNoteViewModel: ObservableObject {
 
     func clearTranscript() { transcript = "" }
 
+    func refreshElapsedTime() {
+        guard isRecording else { return }
+        updateElapsed()
+    }
+
     private func startRecording() async {
         isStarting = true
         status = "Connecting to server…"

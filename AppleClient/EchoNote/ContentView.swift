@@ -3,6 +3,7 @@ import UIKit
 
 struct ContentView: View {
     @ObservedObject var viewModel: EchoNoteViewModel
+    @Environment(\.scenePhase) private var scenePhase
     @State private var showingToken = false
 
     var body: some View {
@@ -64,6 +65,9 @@ struct ContentView: View {
         }
         .task {
             viewModel.checkServer()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active { viewModel.refreshElapsedTime() }
         }
     }
 
