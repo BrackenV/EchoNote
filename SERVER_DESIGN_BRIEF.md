@@ -6,7 +6,7 @@
 
 ## Goal
 
-Build a local Python server that accepts one live iPhone audio session over a WebSocket, feeds speech to the already installed Parakeet model, and returns transcript segments in order. Audio intake must continue while transcription runs. The server should not retain recordings or transcript content after the session unless a later decision explicitly changes that policy.
+Build a local Python server that accepts one live iPhone audio session over a WebSocket, feeds speech to the already installed Parakeet model, and returns transcript segments in order. Audio intake must continue while transcription runs. Do not retain recordings. By explicit product decision, save each session's transcribed text in a separate local text file.
 
 ## Existing Parakeet installation
 
@@ -63,10 +63,10 @@ Reject duplicate starts, malformed frames, oversized messages, unexpected contro
 - MVP supports one active recording session at a time.
 - Socket receive must remain responsive during model inference.
 - Model loads once at server startup and is reused. Startup should expose a clear ready/failed state; do not accept a recording until the model is ready.
-- Keep session audio and transcript data in memory. The reused Parakeet helper briefly writes each current segment as a WAV in the existing runtime temp directory, then deletes it after inference.
+- Keep audio in memory. Append each completed transcript chunk to that session's local text file. The reused Parakeet helper briefly writes each current segment as a WAV in the existing runtime temp directory, then deletes it after inference.
 - Assign segment indices at segmentation time, not completion time.
 - If inference completes out of order in a future implementation, buffer results by index and emit only the next expected index.
-- A disconnect preserves no server-side session data; cancel or drain work according to a documented policy and release buffers.
+- On disconnect, retain transcript chunks already written to the session file, then release audio buffers and cancel or drain pending work according to the session policy.
 
 ## Security and privacy
 

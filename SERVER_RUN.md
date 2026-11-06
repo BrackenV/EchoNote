@@ -24,10 +24,13 @@ The server is plain WebSocket and should be used only over the private Tailscale
 
 The server records one metadata row for each valid recording session in `.echonote-smoke-runtime\logs\session_metrics.sqlite3`. Metrics include the UTC session start time, connection duration, recognized word count, number and duration of received audio frames, inference chunk counts, failed chunks, and average processing time per inference chunk. The server log also reports cumulative recognized words as chunks finish and the average word count across completed sessions. Word counts reflect recognized text and can differ from the words actually spoken.
 
-The database stays on this PC and is ignored by Git. It does not contain audio or transcript text. Remove the database file to clear the collected session metrics.
+The database stays on this PC and is ignored by Git. It contains no transcript text. Remove the database file to clear the collected session metrics.
+
+## Transcript files
+
+The server creates a new UTF-8 `.txt` file for each accepted recording in `.echonote-smoke-runtime\transcripts`. The file starts with its local creation date and time, then receives each completed transcript chunk. Files stay on this PC and are ignored by Git. If a session disconnects early, the file retains the chunks completed up to that point.
 
 ## Current limitations
 
-- The iPhone message format has not yet been implemented or integration-tested against this server.
 - WSS certificate handling, reconnects, silence-aware segment boundaries, overlap reconciliation, and client-side sequence metadata are future protocol decisions.
 - A segment failure is reported and included in `final.failed_segment_indices`; the server continues processing later accepted segments.

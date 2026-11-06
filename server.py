@@ -31,6 +31,7 @@ from typing import Any
 ROOT = Path(__file__).resolve().parent
 RUNTIME_ROOT = Path(os.environ.get("ECHONOTE_RUNTIME_ROOT", str(ROOT / ".echonote-runtime")))
 METRICS_DB = Path(os.environ.get("ECHONOTE_METRICS_DB", str(RUNTIME_ROOT / "logs" / "session_metrics.sqlite3")))
+TRANSCRIPT_DIR = Path(os.environ.get("ECHONOTE_TRANSCRIPT_DIR", str(RUNTIME_ROOT / "transcripts")))
 DEFAULT_LECTURE_TRANSCRIBER = Path(
     r"C:\Users\ellih\Desktop\Personal\University Work Y1\Lecture Transcriber"
 )
@@ -204,6 +205,25 @@ def _count_words(text: str) -> int:
     return len(re.findall(r"\b[\w']+\b", text, flags=re.UNICODE))
 
 
+def _create_transcript_file(session_id: str) -> Path:
+    created_at = datetime.now().astimezone()
+    safe_session_id = re.sub(r"[^A-Za-z0-9_-]+", "_", session_id).strip("_")[:48] or "session"
+    filename_time = created_at.strftime("%Y-%m-%d_%H-%M-%S_%f")
+    transcript_path = TRANSCRIPT_DIR / f"EchoNote_{filename_time}_{safe_session_id}.txt"
+    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    with transcript_path.open("x", encoding="utf-8", newline="\n") as transcript:
+        transcript.write("EchoNote transcript\n")
+        transcript.write(f"Date and time created: {created_at.strftime('%Y-%m-%d %H:%M:%S %Z (%z)')}\n\n")
+    return transcript_path
+
+
+def _append_transcript_chunk(transcript_path: Path, text: str) -> None:
+    cleaned = text.strip()
+    if cleaned:
+        with transcript_path.open("a", encoding="utf-8", newline="\n") as transcript:
+            transcript.write(cleaned + "\n")
+
+
 def _initialize_metrics_store() -> None:
     METRICS_DB.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(METRICS_DB) as connection:
@@ -375,6 +395,13 @@ async def _serve_session(
             or first.get("sample_format") != "s16le"):
         raise ProtocolError("unsupported_audio", "Audio must be mono 16 kHz signed 16-bit little-endian PCM.")
 
+    try:
+        transcript_path = _create_transcript_file(session_id)
+    except OSError as exc:
+        log.exception("transcript_create_failed session=%s", session_id)
+        raise ProtocolError("transcript_storage_error", "The server could not create a transcript file.", 1011) from exc
+    log.info("session_transcript_created session=%s path=%s", session_id, transcript_path)
+
     started_at_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
     started_monotonic = time.monotonic()
     session_word_count = 0
@@ -405,6 +432,10 @@ async def _serve_session(
                 text = await asyncio.to_thread(_transcribe_pcm, engine, model, segment.pcm)
                 elapsed = time.monotonic() - started
                 processing_times.append(elapsed)
+                try:
+                    _append_transcript_chunk(transcript_path, text)
+                except OSError:
+                    log.exception("transcript_append_failed session=%s index=%d", session_id, segment.index)
                 session_word_count += _count_words(text)
                 await outgoing.put({
                     "type": "transcript_segment", "session_id": session_id,
