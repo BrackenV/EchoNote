@@ -21,6 +21,7 @@ import struct
 import sys
 import time
 import uuid
+import warnings
 from array import array
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -52,8 +53,76 @@ MAX_MESSAGE_BYTES = MAX_FRAME_BYTES
 TRANSCRIPTION_QUEUE_SIZE = 3
 PROTOCOL_VERSION = 1
 WEBSOCKET_IDLE_TIMEOUT_SECONDS = 10
+LOG_TRANSCRIPT_TEXT = os.environ.get("ECHONOTE_LOG_TRANSCRIPT_TEXT", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+VERBOSE_FRAMEWORK_LOGS = os.environ.get("ECHONOTE_VERBOSE_FRAMEWORK_LOGS", "0").strip().lower() in {
+    "1", "true", "yes", "on"
+}
 
-logging.basicConfig(level=os.environ.get("ECHONOTE_LOG_LEVEL", "INFO"))
+class _ConsoleFormatter(logging.Formatter):
+    LEVELS = {"INFO": "INFO ", "WARNING": "WARN ", "ERROR": "ERROR", "CRITICAL": "FATAL"}
+
+    def format(self, record: logging.LogRecord) -> str:
+        timestamp = datetime.fromtimestamp(record.created).astimezone().strftime("%H:%M:%S")
+        level = self.LEVELS.get(record.levelname, record.levelname)
+        message = record.getMessage()
+        prefix = f"{timestamp}  {level}  "
+        lines = message.splitlines() or [""]
+        formatted = prefix + lines[0]
+        if record.exc_info:
+            formatted += "\n" + self.formatException(record.exc_info)
+        if len(lines) > 1:
+            formatted += "\n" + " " * len(prefix) + "\n".join(lines[1:])
+        return formatted
+
+
+_console_handler = logging.StreamHandler()
+_console_handler.setFormatter(_ConsoleFormatter())
+logging.basicConfig(
+    level=os.environ.get("ECHONOTE_LOG_LEVEL", "INFO"),
+    handlers=[_console_handler],
+    force=True,
+)
+# Keep third-party output quiet by default. Opt in to its full startup output
+# only when diagnosing the model environment.
+for _quiet_logger in (
+    "nemo",
+    "nemo_logger",
+    "nemo.collections",
+    "nv_one_logger",
+    "nv_one_logger.exporter",
+    "nv_one_logger.training_telemetry",
+):
+    logging.getLogger(_quiet_logger).setLevel(
+        logging.INFO if VERBOSE_FRAMEWORK_LOGS else logging.CRITICAL
+    )
+
+
+def _quiet_known_nemo_dataloader_warnings() -> None:
+    """Quiet NeMo's custom console logger unless framework diagnostics are on."""
+    if VERBOSE_FRAMEWORK_LOGS:
+        return
+    try:
+        from nemo.utils import logging as nemo_logging
+    except ImportError:
+        return
+
+    original_warning = nemo_logging.warning
+    def quiet_warning(message: Any, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+    def quiet_info(message: Any, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+    nemo_logging.warning = quiet_warning
+    nemo_logging.info = quiet_info
+
+
+if not VERBOSE_FRAMEWORK_LOGS:
+    warnings.filterwarnings("ignore", message=".*triton not found; flop counting will not work.*")
+warnings.filterwarnings("ignore", message=".*expandable_segments not supported on this platform.*")
+warnings.filterwarnings("ignore", message=".*RNN module weights are not part of single contiguous chunk of memory.*")
 log = logging.getLogger("echonote.server")
 ACTIVE_SESSION = asyncio.Lock()
 
@@ -154,8 +223,7 @@ def _load_cached_model(engine: Any) -> tuple[Any, str]:
     except ImportError as exc:
         raise RuntimeError("The Lecture Transcriber Python environment is missing NeMo or PyTorch.") from exc
 
-    for logger_name in ("nemo", "nemo_logger", "nemo.collections"):
-        logging.getLogger(logger_name).setLevel(logging.ERROR)
+    _quiet_known_nemo_dataloader_warnings()
     torch.set_float32_matmul_precision("high")
     torch.backends.cuda.matmul.allow_tf32 = True
     torch.backends.cudnn.allow_tf32 = True
@@ -177,7 +245,7 @@ def _load_cached_model(engine: Any) -> tuple[Any, str]:
         device = "CPU"
         log.warning("CUDA is not available. Transcription will use the CPU.")
     model.eval()
-    log.info("Loaded %s from the shared cache on %s", MODEL_ID, device)
+    log.info("Model loaded: %s (%s)", MODEL_ID, device)
     return model, device
 
 
@@ -208,9 +276,8 @@ def _count_words(text: str) -> int:
 
 def _create_transcript_file(session_id: str) -> Path:
     created_at = datetime.now().astimezone()
-    safe_session_id = re.sub(r"[^A-Za-z0-9_-]+", "_", session_id).strip("_")[:48] or "session"
-    filename_time = created_at.strftime("%Y-%m-%d_%H-%M-%S_%f")
-    transcript_path = TRANSCRIPT_DIR / f"EchoNote_{filename_time}_{safe_session_id}.txt"
+    filename_time = created_at.strftime("%Y-%m-%d %H.%M.%S")
+    transcript_path = TRANSCRIPT_DIR / f"EchoNote Transcript - {filename_time}.txt"
     TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
     with transcript_path.open("x", encoding="utf-8", newline="\n") as transcript:
         transcript.write("EchoNote transcript\n")
@@ -409,7 +476,7 @@ async def _serve_session(
     except OSError as exc:
         log.exception("transcript_create_failed session=%s", session_id)
         raise ProtocolError("transcript_storage_error", "The server could not create a transcript file.", 1011) from exc
-    log.info("session_transcript_created session=%s path=%s", session_id, transcript_path)
+    log.info("Recording started: transcript saved to %s", transcript_path)
 
     started_at_utc = datetime.now(timezone.utc).isoformat(timespec="seconds")
     started_monotonic = time.monotonic()
@@ -451,10 +518,8 @@ async def _serve_session(
                     "type": "transcript_segment", "session_id": session_id,
                     "segment_index": segment.index, "text": text,
                 })
-                log.info(
-                    "segment_complete session=%s index=%d elapsed=%.2fs words_so_far=%d",
-                    session_id, segment.index, elapsed, session_word_count,
-                )
+                if LOG_TRANSCRIPT_TEXT and text.strip():
+                    log.info("[%d] %s", segment.index + 1, text.strip())
             except Exception as exc:
                 processing_times.append(time.monotonic() - started)
                 log.exception("transcription_failed session=%s index=%d", session_id, segment.index)
@@ -571,17 +636,10 @@ async def _serve_session(
             historical_sessions, historical_average_words = await asyncio.to_thread(
                 _store_session_metrics, metrics
             )
-            log.info(
-                "session_metrics started_at_utc=%s duration_seconds=%.2f words=%d "
-                "audio_frames=%d audio_seconds=%.2f inference_segments=%d completed_segments=%d "
-                "failed_segments=%d avg_processing_seconds=%s historical_complete_sessions=%d "
-                "historical_average_words=%.1f status=%s",
-                started_at_utc, duration_seconds, session_word_count, audio_frame_count,
-                metrics["audio_seconds"], len(processing_times), metrics["completed_segments"],
-                len(failed_segments),
-                f"{avg_processing_seconds:.2f}" if avg_processing_seconds is not None else "n/a",
-                historical_sessions, historical_average_words, session_status,
-            )
+            log.info("Recording %s: %d words in %.1fs; %d segments, %d failed; average %.1fs/segment",
+                     session_status, session_word_count, duration_seconds,
+                     len(processing_times), len(failed_segments),
+                     avg_processing_seconds or 0.0)
         except Exception:
             log.exception("session_metrics_persist_failed")
 
@@ -609,14 +667,14 @@ async def _handle_client(
         claimed_session = True
         await _serve_session(reader, writer, engine, model, first)
     except ProtocolError as exc:
-        log.info("session_rejected peer=%s code=%s", peer, exc.code)
+        log.warning("Connection rejected (%s)", exc.code)
         try:
             await _send_json(writer, {"type": "error", "code": exc.code, "message": exc.message})
             await _send_frame(writer, 0x8, struct.pack("!H", exc.close_code))
         except OSError:
             pass
     except OSError as exc:
-        log.info("client_disconnected peer=%s error=%s", peer, exc)
+        log.info("Client disconnected")
     except Exception:
         log.exception("session_failed peer=%s", peer)
         try:
@@ -635,9 +693,9 @@ async def _handle_client(
 
 async def run_server() -> None:
     engine = _load_lecture_engine()
-    log.info("Loading the existing cached Parakeet model; downloads are disabled.")
+    log.info("Loading cached Parakeet model (downloads disabled)...")
     model, device = await asyncio.to_thread(_load_cached_model, engine)
-    log.info("Parakeet ready device=%s", device)
+    log.info("Model ready on %s", device)
     await asyncio.to_thread(_initialize_metrics_store)
 
     server = await asyncio.start_server(
@@ -647,7 +705,7 @@ async def run_server() -> None:
         limit=MAX_MESSAGE_BYTES + 1024,
     )
     addresses = ", ".join(str(sock.getsockname()) for sock in (server.sockets or []))
-    log.info("EchoNote server ready address=%s protocol=%d", addresses, PROTOCOL_VERSION)
+    log.info("Listening on %s (protocol %d)", addresses, PROTOCOL_VERSION)
     async with server:
         await server.serve_forever()
 

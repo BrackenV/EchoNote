@@ -37,6 +37,8 @@ $env:ECHONOTE_HOST = $tailscaleAddress
 $env:ECHONOTE_LECTURE_TRANSCRIBER = $lectureTranscriber
 $env:ECHONOTE_MODEL_STORAGE_ROOT = $modelRoot
 $env:ECHONOTE_RUNTIME_ROOT = $runtimeRoot
+$env:ECHONOTE_LOG_TRANSCRIPT_TEXT = "1"
+$env:ECHONOTE_VERBOSE_FRAMEWORK_LOGS = "0"
 
-Write-Host "Starting EchoNote on $($tailscaleAddress):8765. The cached Parakeet model loads into memory at startup."
+Write-Host "EchoNote | $($tailscaleAddress):8765 | loading cached Parakeet model..."
 & $python (Join-Path $PSScriptRoot "server.py")
