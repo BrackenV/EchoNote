@@ -13,3 +13,6 @@ venv/
 DerivedData/
 *.xcuserstate
 xcuserdata/
+# Rust / Mac app build artifacts
+MacClient/target/
+MacClient/dist/

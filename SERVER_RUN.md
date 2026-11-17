@@ -17,11 +17,11 @@ Open PowerShell in this EchoNote folder and run the launcher:
 .\Start-EchoNoteServer.ps1
 ```
 
-The launcher finds the current Tailscale address and checks the Python environment, Lecture Transcriber source, and local model cache before starting. This avoids retrying startup with a stale path. The model still needs to load into GPU memory after a full server restart; keep the server running between recording sessions to avoid that wait.
+The launcher finds the **PC's** current Tailscale IPv4 address, binds the server to that address, and checks the Python environment, Lecture Transcriber source, and local model cache before starting. It prints the address and port to use in a client, for example `100.x.x.x:8765`. This avoids retrying startup with a stale path. The model still needs to load into GPU memory after a full server restart; keep the server running between recording sessions to avoid that wait.
 
-The server listens on port `8765`; set `ECHONOTE_PORT` to change it. The server defaults to `127.0.0.1` if no host is selected, so it will not be reachable from the phone by default.
+The server listens on port `8765`; set `ECHONOTE_PORT` to change it. The server defaults to `127.0.0.1` if no host is selected, so it will not be reachable from clients by default.
 
-The app connects outward to the PC, so the phone address is not entered in the app or required by the server. The app checks the PC with a `health` WebSocket message; this confirms that the PC is reachable over Tailscale, without starting a recording session.
+The Mac and iPhone connect outward to the PC's printed Tailscale address. The PC does not connect to either client, so their Tailscale addresses do not need to be entered in the server or opened for inbound connections. Transcript segments are returned over the same WebSocket connection that carries audio; there is no separate callback connection. The iPhone checks the PC with a `health` WebSocket message; this confirms that the PC is reachable over Tailscale, without starting a recording session. In the Mac recorder, enter the PC address shown by the launcher in **Send audio to PC for transcription**.
 
 The server requires one active session, protocol version `1`, mono 16 kHz signed 16-bit little-endian PCM, and a JSON `start` control message containing `session_id`, `sample_rate`, `channels`, `sample_format`, `segment_seconds`, and `vad_enabled`. Send each audio chunk as a WebSocket binary message. With VAD enabled, use `segment_end` after a speech pause and `keepalive` while quiet. Send JSON `{"type":"stop","session_id":"..."}` to flush the last partial segment and receive the final status.
 

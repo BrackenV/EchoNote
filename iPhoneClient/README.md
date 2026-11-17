@@ -8,6 +8,6 @@ Open `EchoNote.xcodeproj` in Xcode to build the app. See [BUILDING_IOS.md](BUILD
 
 ## Connect
 
-Start the server as described in `../SERVER_RUN.md`. The app uses the PC's Tailscale address automatically; The iPhone must be signed into the same tailnet, and the PC must be awake with the server running. The status light checks the authenticated server connection.
+Start the server as described in `../SERVER_RUN.md`. The iPhone must be signed into the same tailnet, and the PC must be awake with the server running. The PC address in `EchoNote/EchoNoteTransport.swift` must match the address printed by the server launcher. The status light checks whether the server responds.
 
 The current protocol is version 1: an `health` check, then `start`, binary PCM messages, and `stop`; server responses are `health`, `started`, `transcript_segment`, `error`, and `final`.

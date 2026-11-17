@@ -4,7 +4,7 @@ This repository now includes an Xcode project at `EchoNote.xcodeproj`. The Swift
 
 ## One-time Xcode setup
 
-1. Open `AppleClient/EchoNote.xcodeproj` in Xcode.
+1. Open `iPhoneClient/EchoNote.xcodeproj` in Xcode.
 2. Sign in under **Xcode → Settings → Apple Accounts** with the Apple Account used on the iPhone.
 3. Select the **EchoNote** project, then the **EchoNote** app target, then **Signing & Capabilities**.
 4. Leave **Automatically manage signing** enabled and select the account's **Personal Team** (or the intended paid team).
@@ -22,7 +22,7 @@ Build a signed iPhone app bundle with automatic signing:
 
 ```sh
 xcodebuild \
-  -project AppleClient/EchoNote.xcodeproj \
+  -project iPhoneClient/EchoNote.xcodeproj \
   -scheme EchoNote \
   -sdk iphoneos \
   -configuration Debug \
@@ -41,7 +41,7 @@ For an unsigned simulator build, use:
 
 ```sh
 xcodebuild \
-  -project AppleClient/EchoNote.xcodeproj \
+  -project iPhoneClient/EchoNote.xcodeproj \
   -scheme EchoNote \
   -sdk iphonesimulator \
   -configuration Debug \
